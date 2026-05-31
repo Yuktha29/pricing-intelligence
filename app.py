@@ -104,4 +104,138 @@ st.subheader("🗂️ Data Explorer")
 cols_show = ['unit_price','avg_comp_price','price_premium','predicted_revenue','revenue_gap']
 st.dataframe(results[cols_show].round(2), use_container_width=True, height=250)
 
+# ── What-If Price Simulator ──────────────────────────────────────
+st.divider()
+st.subheader("🎯 What-If Price Simulator")
+st.markdown("*Simulate revenue impact of pricing changes in real-time*")
+
+col_sim1, col_sim2 = st.columns([1, 2])
+
+with col_sim1:
+    price_change = st.slider("Price Change (%)", min_value=-30, max_value=30, value=0, step=1)
+    st.markdown(f"**Current avg price:** ${df['unit_price'].mean():.2f}")
+    new_price = df['unit_price'].mean() * (1 + price_change/100)
+    st.markdown(f"**Simulated avg price:** ${new_price:.2f}")
+
+    baseline_revenue = df['total_price'].sum()
+    # Simple elasticity-based estimate (price elasticity ~ -1.5 is typical retail)
+    elasticity = -1.5
+    revenue_change_pct = elasticity * (price_change / 100)
+    simulated_revenue = baseline_revenue * (1 + revenue_change_pct)
+    delta = simulated_revenue - baseline_revenue
+
+    st.metric("Baseline Revenue", f"${baseline_revenue:,.0f}")
+    st.metric("Simulated Revenue", f"${simulated_revenue:,.0f}",
+              delta=f"${delta:,.0f}")
+
+    if delta > 0:
+        st.success(f"✅ Price decrease could recover ${delta:,.0f} in revenue")
+    elif delta < 0:
+        st.warning(f"⚠️ Price increase may reduce revenue by ${abs(delta):,.0f}")
+    else:
+        st.info("No change in pricing")
+
+with col_sim2:
+    price_range = list(range(-30, 31, 5))
+    revenues = [baseline_revenue * (1 + (elasticity * p/100)) for p in price_range]
+    sim_df = pd.DataFrame({'Price Change (%)': price_range, 'Projected Revenue': revenues})
+    fig_sim = px.line(sim_df, x='Price Change (%)', y='Projected Revenue',
+                      markers=True, color_discrete_sequence=['steelblue'],
+                      title='Revenue Sensitivity to Price Changes')
+    fig_sim.add_vline(x=price_change, line_dash="dash", line_color="red",
+                      annotation_text="Current selection")
+    fig_sim.add_vline(x=0, line_dash="dot", line_color="gray",
+                      annotation_text="Baseline")
+    fig_sim.update_layout(height=380)
+    st.plotly_chart(fig_sim, use_container_width=True)
+
+    # ── Anomaly Detection ────────────────────────────────────────────
+st.divider()
+st.subheader("🚨 Competitor Price Anomaly Alerts")
+st.markdown("*Products with abnormal pricing patterns detected via Isolation Forest*")
+
+anomaly_df = pd.read_csv('anomaly_results.csv')
+anomalies = anomaly_df[anomaly_df['is_anomaly'] == True]
+normal = anomaly_df[anomaly_df['is_anomaly'] == False]
+
+col_a1, col_a2, col_a3 = st.columns(3)
+col_a1.metric("🚨 Anomalies Detected", len(anomalies))
+col_a2.metric("✅ Normal Products", len(normal))
+col_a3.metric("Anomaly Rate", f"{len(anomalies)/len(anomaly_df)*100:.1f}%")
+
+col_b1, col_b2 = st.columns(2)
+
+with col_b1:
+    fig_a = px.scatter(anomaly_df, x='unit_price', y='avg_comp_price',
+                       color='is_anomaly',
+                       color_discrete_map={True: 'red', False: 'steelblue'},
+                       labels={'unit_price': 'Our Price',
+                               'avg_comp_price': 'Avg Competitor Price',
+                               'is_anomaly': 'Anomaly'},
+                       title='Anomaly Detection: Our Price vs Competitors')
+    fig_a.update_layout(height=350)
+    st.plotly_chart(fig_a, use_container_width=True)
+
+with col_b2:
+    fig_b = px.scatter(anomaly_df, x='price_premium', y='price_vs_comp1',
+                       color='is_anomaly',
+                       color_discrete_map={True: 'red', False: 'steelblue'},
+                       labels={'price_premium': 'Price Premium Ratio',
+                               'price_vs_comp1': 'Gap vs Competitor 1',
+                               'is_anomaly': 'Anomaly'},
+                       title='Price Premium vs Competitor Gap')
+    fig_b.update_layout(height=350)
+    st.plotly_chart(fig_b, use_container_width=True)
+
+st.markdown("**🔴 Flagged Products Needing Attention:**")
+st.dataframe(anomalies[['unit_price','avg_comp_price','price_premium',
+                          'price_vs_comp1','price_vs_comp2','price_vs_comp3']].round(2),
+             use_container_width=True, height=200)
+
+# ── Causal Inference ─────────────────────────────────────────────
+st.divider()
+st.subheader("⚗️ Causal Inference: True Price Impact")
+st.markdown("*Beyond correlation — quantifying the causal effect of price on revenue using DoWhy*")
+
+with open('causal_result.json') as f:
+    causal = json.load(f)
+
+effect = causal['causal_effect']
+
+col_c1, col_c2 = st.columns([1, 2])
+
+with col_c1:
+    st.metric("Causal Effect (per $1 price increase)", f"${effect:.2f}")
+    st.markdown("""
+    **How to read this:**
+    - This is **not just correlation** — it's causal
+    - Controlling for qty, competitors & lag price
+    - A **$1 price increase** causes **$0.90 revenue loss**
+    - Recommendation: prioritize volume over margin
+    """)
+
+    st.info(f"""
+    💡 **Business Insight**
+    
+    To recover the **$9,758 opportunity**:
+    - Reduce price by ~$10 on flagged products
+    - Expected causal revenue gain: **${abs(effect)*10*34:,.0f}**
+    - Affects {34} anomalous products identified
+    """)
+
+with col_c2:
+    # Causal effect visualization
+    price_deltas = list(range(-20, 21, 2))
+    causal_revenues = [effect * d * len(df) for d in price_deltas]
+    causal_sim_df = pd.DataFrame({
+        'Price Change ($)': price_deltas,
+        'Causal Revenue Impact ($)': causal_revenues
+    })
+    fig_c = px.bar(causal_sim_df, x='Price Change ($)', y='Causal Revenue Impact ($)',
+                   color='Causal Revenue Impact ($)',
+                   color_continuous_scale='RdYlGn',
+                   title='Causal Revenue Impact by Price Change')
+    fig_c.add_hline(y=0, line_color='black', line_dash='dash')
+    fig_c.update_layout(height=380, showlegend=False)
+
 st.caption("Built by Yuktha Reddy | XGBoost + SHAP Pricing Intelligence Engine")

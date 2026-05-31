@@ -86,3 +86,53 @@ with open('metrics.json', 'w') as f:
 
 print("\nAll files saved!")
 print("Metrics:", metrics)
+
+# ── Anomaly Detection ────────────────────────────────────────────
+from sklearn.ensemble import IsolationForest
+
+anomaly_features = df[['unit_price', 'avg_comp_price', 'price_premium',
+                        'price_vs_comp1', 'price_vs_comp2', 'price_vs_comp3']].copy()
+
+iso = IsolationForest(contamination=0.05, random_state=42)
+df['anomaly'] = iso.fit_predict(anomaly_features)
+df['is_anomaly'] = df['anomaly'] == -1
+
+anomaly_count = df['is_anomaly'].sum()
+print(f"\nAnomalies detected: {anomaly_count} ({anomaly_count/len(df)*100:.1f}% of products)")
+
+df[['unit_price', 'avg_comp_price', 'price_premium',
+    'price_vs_comp1', 'price_vs_comp2', 'price_vs_comp3',
+    'is_anomaly']].to_csv('anomaly_results.csv', index=False)
+print("Saved: anomaly_results.csv")
+
+# ── Causal Inference ─────────────────────────────────────────────
+import dowhy
+from dowhy import CausalModel
+
+causal_df = pd.read_csv('retail_price_clean.csv')[
+    ['unit_price', 'total_price', 'qty', 'comp_1', 'comp_2', 'comp_3', 'lag_price']
+].dropna()
+
+model = CausalModel(
+    data=causal_df,
+    treatment='unit_price',
+    outcome='total_price',
+    common_causes=['qty', 'comp_1', 'comp_2', 'comp_3', 'lag_price']
+)
+
+identified = model.identify_effect(proceed_when_unidentifiable=True)
+estimate = model.estimate_effect(
+    identified,
+    method_name="backdoor.linear_regression"
+)
+
+causal_effect = estimate.value
+print(f"\nCausal Effect of price on revenue: {causal_effect:.4f}")
+print("Interpretation: A $1 increase in unit price causes a",
+      f"${causal_effect:.2f} change in total revenue")
+
+# Save causal result
+causal_result = {"causal_effect": round(float(causal_effect), 4)}
+with open('causal_result.json', 'w') as f:
+    json.dump(causal_result, f)
+print("Saved: causal_result.json")
